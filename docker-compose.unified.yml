@@ -1,0 +1,170 @@
+version: "3.9"
+
+services:
+
+  postgres-tp:
+    image: postgres:16-alpine
+    container_name: aithon_postgres_tp
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: taskplanner
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_tp:/var/lib/postgresql/data
+    networks:
+      - aithon_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-ai:
+    image: postgres:16-alpine
+    container_name: aithon_postgres_ai
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aithon_db
+      POSTGRES_USER: aithon
+      POSTGRES_PASSWORD: aithon_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_ai:/var/lib/postgresql/data
+    networks:
+      - aithon_net
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U aithon -d aithon_db" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: aithon_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - aithon_net
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  fastapi:
+    build:
+      context: ./Aithon/backend
+      dockerfile: Dockerfile
+    container_name: aithon_fastapi
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://aithon:aithon_secret@postgres-ai:5432/aithon_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - JWT_SECRET_KEY=aithon-production-secret-change-me
+      - CORS_ORIGINS=["http://localhost:5173","http://localhost:4000","http://gateway:4000"]
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./Aithon/backend:/app
+      - uploads:/app/uploads
+      - synthetic_output:/app/synthetic_output
+    networks:
+      - aithon_net
+    depends_on:
+      postgres-ai:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build:
+      context: ./Aithon/backend
+      dockerfile: Dockerfile
+    container_name: aithon_celery
+    restart: unless-stopped
+    command: celery -A core.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      - DATABASE_URL=postgresql://aithon:aithon_secret@postgres-ai:5432/aithon_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./Aithon/backend:/app
+      - uploads:/app/uploads
+      - synthetic_output:/app/synthetic_output
+    networks:
+      - aithon_net
+    depends_on:
+      postgres-ai:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      fastapi:
+        condition: service_started
+
+  gateway:
+    build:
+      context: ./TaskPlanner/server
+      dockerfile: Dockerfile.gateway
+    container_name: aithon_gateway
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-tp:5432/taskplanner
+      - JWT_SECRET=taskplanner-local-secret
+      - CLIENT_ORIGIN=http://localhost:5173
+      - FASTAPI_URL=http://fastapi:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    networks:
+      - aithon_net
+    depends_on:
+      postgres-tp:
+        condition: service_healthy
+      fastapi:
+        condition: service_started
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:4000/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./Aithon/Aithon
+      dockerfile: Dockerfile
+    container_name: aithon_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_GATEWAY_API=http://localhost:4000/api
+      - VITE_GATEWAY_URL=http://localhost:4000
+    volumes:
+      - ./Aithon/Aithon:/app
+      - /app/node_modules
+    networks:
+      - aithon_net
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+volumes:
+  pgdata_tp:
+  pgdata_ai:
+  uploads:
+  synthetic_output:
+
+networks:
+  aithon_net:
+    driver: bridge

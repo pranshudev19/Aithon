@@ -1,0 +1,18 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies first (layer cache)
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy server source
+COPY . .
+
+# Health check dependency
+RUN apk add --no-cache curl
+
+EXPOSE 4000
+
+# Seed DB then start server; seed is idempotent (ON CONFLICT DO NOTHING)
+CMD ["sh", "-c", "node db/seed.js && node index.js"]

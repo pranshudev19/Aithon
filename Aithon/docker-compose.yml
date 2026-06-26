@@ -1,0 +1,94 @@
+version: "3.9"
+
+services:
+  # ─── PostgreSQL Database ────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: aithon_db
+      POSTGRES_USER: aithon
+      POSTGRES_PASSWORD: aithon_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aithon"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ─── Redis ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── FastAPI Backend ────────────────────────────────────────────────────
+  backend:
+    image: aithon-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://aithon:aithon_secret@postgres:5432/aithon_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - JWT_SECRET_KEY=aithon-production-secret-change-me
+      - CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://0.0.0.0:5173","http://localhost:3000","http://127.0.0.1:3000","http://0.0.0.0:3000"]
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+      - synthetic_output:/app/synthetic_output
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ─── Celery Worker ─────────────────────────────────────────────────────
+  celery-worker:
+    image: aithon-backend:latest
+    command: celery -A core.celery_app worker --loglevel=info --concurrency=4
+    environment:
+      - DATABASE_URL=postgresql://aithon:aithon_secret@postgres:5432/aithon_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+      - synthetic_output:/app/synthetic_output
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  # ─── React Frontend ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./Aithon
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./Aithon:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  uploads:
+  synthetic_output:

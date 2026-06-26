@@ -1,0 +1,19 @@
+{
+  "name": "taskplanner",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm run build --prefix client",
+    "seed": "npm run seed --prefix server"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "description": "AI-powered full-stack task planner monorepo",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
